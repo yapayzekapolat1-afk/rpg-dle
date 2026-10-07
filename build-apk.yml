@@ -1,0 +1,115 @@
+# GitHub'a koy: .github/workflows/build-apk.yml
+# Repoda sadece index.html (oyun) + bu dosya yeterli. Her push'ta APK uretilir:
+#   Releases sekmesinden indir (ioz-rpg-idle.apk) veya Actions > calisma > Artifacts
+# Elle baslatmak icin: Actions > APK Olustur > Run workflow
+name: APK Olustur
+
+on:
+  push:
+    branches: [main, master]
+    paths: [index.html, .github/workflows/build-apk.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: "İOZ RPG İDLE"     # telefonda gorunen ad
+  APP_ID: "com.iozgames.rpgidle"   # Android paket adi (Play Store icin sonradan degistirilemez)
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Capacitor projesini olustur
+        run: |
+          mkdir -p www
+          cp index.html www/index.html
+          npm init -y > /dev/null
+          npm i @capacitor/core@7 @capacitor/cli@7 @capacitor/android@7
+          npx cap init "$APP_NAME" "$APP_ID" --web-dir www
+          npx cap add android
+          npx cap sync android
+
+      - name: Tam ekran, dikey kilit, ekran acik kalsin
+        run: |
+          MAN=android/app/src/main/AndroidManifest.xml
+          sed -i '0,/<activity/s//<activity android:screenOrientation="portrait"/' "$MAN"
+          sed -i "s/versionCode 1/versionCode ${GITHUB_RUN_NUMBER}/" android/app/build.gradle
+          DIR="android/app/src/main/java/$(echo "$APP_ID" | tr . /)"
+          cat > "$DIR/MainActivity.java" <<JAVA
+          package $APP_ID;
+
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.view.WindowManager;
+          import androidx.core.view.WindowCompat;
+          import androidx.core.view.WindowInsetsCompat;
+          import androidx.core.view.WindowInsetsControllerCompat;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+            @Override
+            public void onCreate(Bundle savedInstanceState) {
+              super.onCreate(savedInstanceState);
+              getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+              if (Build.VERSION.SDK_INT >= 28) {
+                getWindow().getAttributes().layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+              }
+              immersive();
+            }
+
+            @Override
+            public void onWindowFocusChanged(boolean hasFocus) {
+              super.onWindowFocusChanged(hasFocus);
+              if (hasFocus) immersive();
+            }
+
+            @Override
+            public void onResume() {
+              super.onResume();
+              immersive();
+            }
+
+            private void immersive() {
+              WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+              WindowInsetsControllerCompat c =
+                  new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
+              c.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+              c.hide(WindowInsetsCompat.Type.systemBars());
+            }
+          }
+          JAVA
+
+      - name: APK derle
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: APK adini duzenle
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk ioz-rpg-idle.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ioz-rpg-idle-apk
+          path: ioz-rpg-idle.apk
+
+      - name: Release olarak yayinla (direkt indirme linki)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: APK ${{ github.run_number }}
+          files: ioz-rpg-idle.apk
